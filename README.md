@@ -98,13 +98,6 @@ Lists geo-backup support, zone-redundant HA availability, online resize, and sto
 
 Lists zone-redundant HA support, geo-backup support, all supported HA modes, and any provisioning restriction per region. Restricted entries are repeated in a red-highlighted table.
 
-| Column | Meaning |
-|---|---|
-| `ZoneRedundantHA` | Whether `ZoneRedundant` appears in the supported HA modes for this capability tier |
-| `GeoBackupSupported` | Whether any geo-backup target regions are advertised |
-| `SupportedHAModes` | Comma-separated list of supported HA modes (e.g. `SameZone, ZoneRedundant`) |
-| `Restricted` | `Enabled` = subscription is blocked from provisioning in this region; open a support request |
-
 ### CSV Export
 
 At the end of each run the script prompts whether to export results to CSV. Each dataset is written to its own file with columns matching the console table exactly:
