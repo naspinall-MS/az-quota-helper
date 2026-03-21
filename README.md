@@ -30,7 +30,7 @@ Install-Module Az.Accounts, Az.Resources -Scope CurrentUser
 All parameters are optional. If omitted, the script prompts interactively.
 
 ```powershell
-.\Get-AzDBServiceQuota.ps1 [-SubscriptionId <string[]>] [-Location <string[]>] [-Service <string[]>] [-IncludeCapabilities] [-OutputPath <string>]
+.\Get-AzDBServiceQuota.ps1 [-SubscriptionId <string[]>] [-Location <string[]>] [-Services <string[]>] [-IncludeCapabilities] [-OutputPath <string>]
 ```
 
 ### Parameters
@@ -39,8 +39,8 @@ All parameters are optional. If omitted, the script prompts interactively.
 |---|---|---|
 | `-SubscriptionId` | `string[]` | One or more subscription GUIDs. Prompts if omitted. |
 | `-Location` | `string[]` | One or more Azure region names (e.g. `eastus`, `westeurope`). Accepts mixed casing and hyphenated formats. Prompts if omitted. |
-| `-Service` | `string[]` | Services to query. Valid values: `All`, `CosmosDB`, `SqlDB`, `SqlMI`, `PostgreSQL`, `MySQL`. Defaults to `All` if Enter is pressed at the prompt. |
-| `-IncludeCapabilities` | `switch` | Also outputs SQL edition/tier availability and SQL MI hardware family zone-redundancy support, and PostgreSQL regional capabilities. |
+| `-Services` | `string[]` | Services to query. Valid values: `All`, `CosmosDB`, `SqlDB`, `SqlMI`, `PostgreSQL`, `MySQL`. Defaults to `All` if Enter is pressed at the prompt. |
+| `-IncludeCapabilities` | `switch` | Also outputs SQL edition/tier availability, SQL MI hardware family zone-redundancy support, PostgreSQL regional capability flags, and MySQL regional capability flags (HA modes, geo-backup support). |
 | `-OutputPath` | `string` | Optional CSV path. If provided, quota/usage data is exported here in addition to the interactive export prompt at the end of the run. |
 
 ### Examples
@@ -50,13 +50,13 @@ All parameters are optional. If omitted, the script prompts interactively.
 .\Get-AzDBServiceQuota.ps1 -SubscriptionId 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx' -Location 'eastus'
 
 # Multiple subscriptions and regions, SQL only
-.\Get-AzDBServiceQuota.ps1 -SubscriptionId 'id1','id2' -Location 'eastus','westeurope' -Service SqlDB,SqlMI
+.\.Get-AzDBServiceQuota.ps1 -SubscriptionId 'id1','id2' -Location 'eastus','westeurope' -Services SqlDB,SqlMI
 
-# Include SQL/PostgreSQL capability detail
-.\Get-AzDBServiceQuota.ps1 -SubscriptionId '<id>' -Location 'westeurope' -Service SqlDB,SqlMI -IncludeCapabilities
+# Include SQL/PostgreSQL/MySQL capability detail
+.\.Get-AzDBServiceQuota.ps1 -SubscriptionId '<id>' -Location 'westeurope' -Services SqlDB,SqlMI -IncludeCapabilities
 
 # Export quota/usage to a specific path
-.\Get-AzDBServiceQuota.ps1 -SubscriptionId '<id>' -Location 'eastus' -Service CosmosDB,PostgreSQL -OutputPath C:\Temp\quota.csv
+.\.Get-AzDBServiceQuota.ps1 -SubscriptionId '<id>' -Location 'eastus' -Services CosmosDB,PostgreSQL -OutputPath C:\Temp\quota.csv
 ```
 
 ## Output
@@ -94,12 +94,28 @@ Lists available SQL DB editions and SQL MI hardware families, their status, and 
 
 Lists geo-backup support, zone-redundant HA availability, online resize, and storage auto-growth flags per region.
 
+### MySQL Regional Capabilities *(with `-IncludeCapabilities`)*
+
+Lists zone-redundant HA support, geo-backup support, all supported HA modes, and any provisioning restriction per region. Restricted entries are repeated in a red-highlighted table.
+
+| Column | Meaning |
+|---|---|
+| `ZoneRedundantHA` | Whether `ZoneRedundant` appears in the supported HA modes for this capability tier |
+| `GeoBackupSupported` | Whether any geo-backup target regions are advertised |
+| `SupportedHAModes` | Comma-separated list of supported HA modes (e.g. `SameZone, ZoneRedundant`) |
+| `Restricted` | `Enabled` = subscription is blocked from provisioning in this region; open a support request |
+
 ### CSV Export
 
-At the end of each run the script prompts whether to export results to CSV. Two files are written:
+At the end of each run the script prompts whether to export results to CSV. Each dataset is written to its own file with columns matching the console table exactly:
 
-- `AzDbQuota-Usage-<timestamp>.csv` — quota and usage data
-- `AzDbQuota-Access-<timestamp>.csv` — region/zone access and capabilities
+| File | Contents | Produced when |
+|---|---|---|
+| `AzDbQuota-Usage-<timestamp>.csv` | Quota and usage data | Always |
+| `AzDbQuota-Access-<timestamp>.csv` | Region and zone access | Always |
+| `AzDbQuota-SQLMICaps-<timestamp>.csv` | SQL DB edition and SQL MI hardware family availability | `-IncludeCapabilities` |
+| `AzDbQuota-PostgresCaps-<timestamp>.csv` | PostgreSQL regional capability flags | `-IncludeCapabilities` |
+| `AzDbQuota-MySQLCaps-<timestamp>.csv` | MySQL regional capability flags | `-IncludeCapabilities` |
 
 ## How it works
 

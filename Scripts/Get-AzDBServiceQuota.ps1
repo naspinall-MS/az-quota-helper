@@ -22,8 +22,8 @@
     hyphenated formats; normalised to lowercase no-separator internally. If omitted, prompts
     interactively.
 
-.PARAMETER Service
-    Services to query. Valid values: All, CosmosDB, SqlDB, SqlMI, PostgreSQL.
+.PARAMETER Services
+    Services to query. Valid values: All, CosmosDB, SqlDB, SqlMI, PostgreSQL, MySQL.
     Accepts an array. If omitted, the script prompts interactively; pressing Enter selects All.
 
 .PARAMETER IncludeCapabilities
@@ -56,7 +56,7 @@ param(
     [string[]] $Location,
 
     [Parameter()]
-    [string[]] $Service,
+    [string[]] $Services,
 
     [Parameter()]
     [switch] $IncludeCapabilities,
@@ -663,6 +663,42 @@ function Get-MySqlRegionAccess {
     }
 }
 
+function Get-MySqlCapabilities {
+    # Returns regional Flexible Server capability flags (HA modes, geo-backup support, etc.).
+    param([string] $Token, [string] $SubscriptionId, [string] $SubscriptionName, [string] $Location)
+
+    $uri  = "https://management.azure.com/subscriptions/$SubscriptionId/providers" +
+            "/Microsoft.DBforMySQL/locations/$Location/capabilities?api-version=2023-12-30"
+    $resp = Invoke-ArmGet -Token $Token -Uri $uri -QuietNotFound
+    if (-not $resp -or -not $resp.PSObject.Properties['value']) {
+        Write-Host "  Note (MySQL): capabilities data not available for '$Location'." -ForegroundColor DarkGray
+        return
+    }
+
+    $normLoc = $Location.ToLower() -replace '[\s-]', ''
+    foreach ($item in $resp.value) {
+        $haModes    = if ($item.PSObject.Properties['supportedHAMode'])         { $item.supportedHAMode -join ', ' }  else { 'Unknown' }
+        $zrHA       = if ($item.PSObject.Properties['supportedHAMode'])         { ($item.supportedHAMode -contains 'ZoneRedundant') } else { 'Unknown' }
+        $geoBackup  = if ($item.PSObject.Properties['supportedGeoBackupRegions']) {
+                          $item.supportedGeoBackupRegions.PSObject.Properties.Count -gt 0
+                      } else { 'Unknown' }
+        $restricted = if ($item.PSObject.Properties['restricted'])              { $item.restricted }                  else { 'Unknown' }
+        $reason     = if ($item.PSObject.Properties['reason'] -and $item.reason){ $item.reason }                    else { '' }
+
+        [PSCustomObject][ordered]@{
+            SubscriptionId   = $SubscriptionId
+            SubscriptionName = $SubscriptionName
+            Service          = 'MySQL Flex'
+            Location         = $normLoc
+            ZoneRedundantHA  = $zrHA
+            GeoBackupSupported = $geoBackup
+            SupportedHAModes = $haModes
+            Restricted       = $restricted
+            Reason           = $reason
+        }
+    }
+}
+
 #endregion
 
 #region ── Provider registration helper ──────────────────────────────────────────
@@ -721,17 +757,17 @@ if (-not $Location) {
 # Normalise all locations to canonical form (lowercase, no spaces or hyphens)
 $Location = @($Location | ForEach-Object { $_.ToLower() -replace '[\s-]', '' })
 
-# ── Service selection (interactive if -Service not passed) ────────────────────
+# ── Service selection (interactive if -Services not passed) ────────────────────
 $validServices = @('CosmosDB', 'SqlDB', 'SqlMI', 'PostgreSQL', 'MySQL')
-if (-not $Service) {
+if (-not $Services) {
     Write-Host ''
     Write-Host "  Available services: $($validServices -join ', ')" -ForegroundColor DarkCyan
     $serviceInput = Read-Host '  Which services to query? (comma-separated, or press Enter for All)'
     if ([string]::IsNullOrWhiteSpace($serviceInput)) {
-        $Service = @('All')
+        $Services = @('All')
     } else {
-        $Service = @($serviceInput -split '\s*,\s*' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-        $invalid  = $Service | Where-Object { $_ -notin ($validServices + 'All') }
+        $Services = @($serviceInput -split '\s*,\s*' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        $invalid  = $Services | Where-Object { $_ -notin ($validServices + 'All') }
         if ($invalid) {
             throw "Invalid service(s): $($invalid -join ', '). Valid options: All, $($validServices -join ', ')"
         }
@@ -743,15 +779,15 @@ Write-Host 'Azure Database Quota & Usage Report' -ForegroundColor Cyan
 Write-Host ('─' * 70) -ForegroundColor DarkCyan
 Write-Host "  Subscription(s) : $($SubscriptionId -join ', ')"
 Write-Host "  Location(s)     : $($Location -join ', ')"
-Write-Host "  Services        : $($Service -join ', ')"
+Write-Host "  Services        : $($Services -join ', ')"
 Write-Host ('─' * 70) -ForegroundColor DarkCyan
 
-$runAll      = $Service -contains 'All'
-$runCosmos   = $runAll -or ($Service -contains 'CosmosDB')
-$runSqlDb    = $runAll -or ($Service -contains 'SqlDB')
-$runSqlMi    = $runAll -or ($Service -contains 'SqlMI')
-$runPostgres = $runAll -or ($Service -contains 'PostgreSQL')
-$runMySQL    = $runAll -or ($Service -contains 'MySQL')
+$runAll      = $Services -contains 'All'
+$runCosmos   = $runAll -or ($Services -contains 'CosmosDB')
+$runSqlDb    = $runAll -or ($Services -contains 'SqlDB')
+$runSqlMi    = $runAll -or ($Services -contains 'SqlMI')
+$runPostgres = $runAll -or ($Services -contains 'PostgreSQL')
+$runMySQL    = $runAll -or ($Services -contains 'MySQL')
 $multiSub    = $SubscriptionId.Count -gt 1
 
 # ── Resource provider auto-registration prompt ───────────────────────────
@@ -771,10 +807,11 @@ $currentSubName = $null
 $token          = $null
 
 # Thread-safe bags for parallel location results
-$usageBag      = [System.Collections.Concurrent.ConcurrentBag[PSCustomObject]]::new()
-$accessBag     = [System.Collections.Concurrent.ConcurrentBag[PSCustomObject]]::new()
-$sqlCapsBag    = [System.Collections.Concurrent.ConcurrentBag[PSCustomObject]]::new()
-$pgCapsBag     = [System.Collections.Concurrent.ConcurrentBag[PSCustomObject]]::new()
+$usageBag        = [System.Collections.Concurrent.ConcurrentBag[PSCustomObject]]::new()
+$accessBag       = [System.Collections.Concurrent.ConcurrentBag[PSCustomObject]]::new()
+$sqlCapsBag      = [System.Collections.Concurrent.ConcurrentBag[PSCustomObject]]::new()
+$pgCapsBag       = [System.Collections.Concurrent.ConcurrentBag[PSCustomObject]]::new()
+$mysqlCapsBag    = [System.Collections.Concurrent.ConcurrentBag[PSCustomObject]]::new()
 
 # ── Ensure authenticated before making any API calls ─────────────────────────
 Assert-AzAuthentication
@@ -853,6 +890,7 @@ foreach ($subId in $SubscriptionId) {
     $fnPgRegAccess       = ${function:Get-PostgreSqlRegionAccess}.ToString()
     $fnPgCaps            = ${function:Get-PostgreSqlCapabilities}.ToString()
     $fnMySqlRegAccess    = ${function:Get-MySqlRegionAccess}.ToString()
+    $fnMySqlCaps         = ${function:Get-MySqlCapabilities}.ToString()
 
     Write-Host "  Querying $($loopLocations.Count) location(s) in parallel..." -ForegroundColor DarkCyan
 
@@ -871,10 +909,11 @@ foreach ($subId in $SubscriptionId) {
         $cosLocResp = $using:loopCosLocResp
         $locAzMap   = $using:loopLocAZSupport
 
-        $usageBag   = $using:usageBag
-        $accessBag  = $using:accessBag
-        $sqlCapsBag = $using:sqlCapsBag
-        $pgCapsBag  = $using:pgCapsBag
+        $usageBag     = $using:usageBag
+        $accessBag    = $using:accessBag
+        $sqlCapsBag   = $using:sqlCapsBag
+        $pgCapsBag    = $using:pgCapsBag
+        $mysqlCapsBag = $using:mysqlCapsBag
 
         # Rebuild functions in this runspace from the captured ScriptBlocks
         . ([ScriptBlock]::Create("function Invoke-ArmGet { $($using:fnArmGet) }"))
@@ -890,6 +929,7 @@ foreach ($subId in $SubscriptionId) {
         . ([ScriptBlock]::Create("function Get-PostgreSqlRegionAccess { $($using:fnPgRegAccess) }"))
         . ([ScriptBlock]::Create("function Get-PostgreSqlCapabilities { $($using:fnPgCaps) }"))
         . ([ScriptBlock]::Create("function Get-MySqlRegionAccess { $($using:fnMySqlRegAccess) }"))
+        . ([ScriptBlock]::Create("function Get-MySqlCapabilities { $($using:fnMySqlCaps) }"))
 
         # AZ support for this location (ARM locations API; defaults $true if unknown to avoid false negatives)
         $normLocKey = $loc.ToLower() -replace '[\s-]', ''
@@ -954,6 +994,10 @@ foreach ($subId in $SubscriptionId) {
             $mysqlRow = Get-MySqlRegionAccess -Token $token -SubscriptionId $subId -SubscriptionName $subName -Location $loc `
                 -RegionHasAZ $locHasAZ
             if ($mysqlRow) { $accessBag.Add($mysqlRow) }
+            if ($inclCaps) {
+                $mysqlCaps = @(Get-MySqlCapabilities -Token $token -SubscriptionId $subId -SubscriptionName $subName -Location $loc)
+                if ($mysqlCaps) { foreach ($r in $mysqlCaps) { $mysqlCapsBag.Add($r) } }
+            }
         }
 
 
@@ -961,22 +1005,19 @@ foreach ($subId in $SubscriptionId) {
 }
 
 # Collect results from concurrent bags into ordered lists
-$allUsage     = [System.Collections.Generic.List[PSCustomObject]]($usageBag)
-$regionAccess = [System.Collections.Generic.List[PSCustomObject]]($accessBag)
-$allSqlCaps   = [System.Collections.Generic.List[PSCustomObject]]($sqlCapsBag)
-$allPgCaps    = [System.Collections.Generic.List[PSCustomObject]]($pgCapsBag)
+$allUsage      = [System.Collections.Generic.List[PSCustomObject]]($usageBag)
+$regionAccess  = [System.Collections.Generic.List[PSCustomObject]]($accessBag)
+$allSqlCaps    = [System.Collections.Generic.List[PSCustomObject]]($sqlCapsBag)
+$allPgCaps     = [System.Collections.Generic.List[PSCustomObject]]($pgCapsBag)
+$allMySqlCaps  = [System.Collections.Generic.List[PSCustomObject]]($mysqlCapsBag)
 
 # ── Conditional property lists (SubscriptionId shown only when querying multiple subscriptions) ─
-$usageProps  = if ($multiSub) { @('SubscriptionId','SubscriptionName','Service','Scope','Metric','CurrentUsage','Limit','Available','PercentUsed','Unit') } `
-               else           { @('SubscriptionName','Service','Scope','Metric','CurrentUsage','Limit','Available','PercentUsed','Unit') }
-$accessProps = if ($multiSub) { @('SubscriptionId','SubscriptionName','Service','LocationCode','AccessAllowedForRegion','AccessAllowedForAZ','Notes') } `
-               else           { @('SubscriptionName','Service','LocationCode','AccessAllowedForRegion','AccessAllowedForAZ','Notes') }
-$warnProps   = if ($multiSub) { @('SubscriptionId','SubscriptionName','Service','Scope','Metric','CurrentUsage','Limit','PercentUsed') } `
-               else           { @('SubscriptionName','Service','Scope','Metric','CurrentUsage','Limit','PercentUsed') }
-$sqlCapProps = if ($multiSub) { @('SubscriptionId','SubscriptionName','Service','Category','Name','Status','ZoneRedundant','Restriction') } `
-               else           { @('SubscriptionName','Service','Category','Name','Status','ZoneRedundant','Restriction') }
-$pgCapProps    = if ($multiSub) { @('SubscriptionId','SubscriptionName','Service','Location','GeoBackupSupported','ZoneRedundantHA','ZoneRedundantHAAndGeoBck','OnlineResizeSupported','StorageAutoGrowth') } `
-               else           { @('SubscriptionName','Service','Location','GeoBackupSupported','ZoneRedundantHA','ZoneRedundantHAAndGeoBck','OnlineResizeSupported','StorageAutoGrowth') }
+$usageProps  = @('SubscriptionName','SubscriptionId','Service','Scope','Metric','CurrentUsage','Limit','Available','PercentUsed','Unit')
+$accessProps = @('SubscriptionName','SubscriptionId','Service','LocationCode','AccessAllowedForRegion','AccessAllowedForAZ','Notes')
+$warnProps   = @('SubscriptionName','SubscriptionId','Service','Scope','Metric','CurrentUsage','Limit','PercentUsed')
+$sqlCapProps = @('SubscriptionName','SubscriptionId','Service','Category','Name','Status','ZoneRedundant','Restriction')
+$pgCapProps    = @('SubscriptionName','SubscriptionId','Service','Location','GeoBackupSupported','ZoneRedundantHA','ZoneRedundantHAAndGeoBck','OnlineResizeSupported','StorageAutoGrowth')
+$mysqlCapProps = @('SubscriptionName','SubscriptionId','Service','Location','ZoneRedundantHA','GeoBackupSupported','SupportedHAModes','Restricted','Reason')
 
 # ── Quota & Usage table ───────────────────────────────────────────────────────
 Write-Host ''
@@ -1044,6 +1085,19 @@ if ($IncludeCapabilities -and $runPostgres -and $allPgCaps.Count -gt 0) {
     }
 }
 
+# ── MySQL Regional Capabilities ───────────────────────────────────────────────
+if ($IncludeCapabilities -and $runMySQL -and $allMySqlCaps.Count -gt 0) {
+    Write-Host ''
+    Write-Host ('── MySQL Regional Capabilities ' + ('─' * 40)) -ForegroundColor Cyan
+    $allMySqlCaps | Format-Table -AutoSize -Property $mysqlCapProps
+
+    if ($allMySqlCaps | Where-Object { $_.Restricted -eq 'Enabled' }) {
+        Write-Host ('── MySQL Provisioning Restriction ' + ('─' * 37)) -ForegroundColor Red
+        $allMySqlCaps | Where-Object { $_.Restricted -eq 'Enabled' } |
+            Format-Table -AutoSize -Property Service, Location, Restricted, Reason
+    }
+}
+
 # ── CSV Export ────────────────────────────────────────────────────────────────
 # Legacy -OutputPath support (quota/usage only)
 if ($OutputPath) {
@@ -1056,58 +1110,46 @@ if ($OutputPath) {
 Write-Host ''
 $exportAnswer = Read-Host '  Export results to CSV? (y/n)'
 if ($exportAnswer -match '^(y|yes)$') {
-    $timestamp   = Get-Date -Format 'yyyyMMdd-HHmmss'
-    $defaultDir  = if ($OutputPath) { Split-Path $OutputPath } else { $PWD.Path }
-
-    $usageCsv    = Join-Path $defaultDir "AzDbQuota-Usage-${timestamp}.csv"
-    $accessCsv   = Join-Path $defaultDir "AzDbQuota-Access-${timestamp}.csv"
+    $timestamp  = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $defaultDir = if ($OutputPath) { Split-Path $OutputPath } else { $PWD.Path }
 
     # Quota & usage
     if ($allUsage.Count -gt 0) {
-        $allUsage | Export-Csv -Path $usageCsv -NoTypeInformation -Encoding UTF8
-        Write-Host "  Quota/usage   → $usageCsv" -ForegroundColor Green
+        $usageCsv = Join-Path $defaultDir "AzDbQuota-Usage-${timestamp}.csv"
+        $allUsage | Select-Object $usageProps | Export-Csv -Path $usageCsv -NoTypeInformation -Encoding UTF8
+        Write-Host "  Quota/usage      → $usageCsv" -ForegroundColor Green
     } else {
         Write-Host '  No quota/usage data to export.' -ForegroundColor DarkGray
     }
 
-    # Region & zone access + capabilities (all access-related tables in one file)
-    $accessRows = [System.Collections.Generic.List[PSCustomObject]]::new()
-    if ($regionAccess.Count -gt 0) { $accessRows.AddRange([PSCustomObject[]]$regionAccess) }
-    if ($allSqlCaps.Count -gt 0)   {
-        $allSqlCaps | ForEach-Object {
-            $accessRows.Add([PSCustomObject][ordered]@{
-                SubscriptionId   = $_.SubscriptionId
-                SubscriptionName = $_.SubscriptionName
-                DataType         = 'SQL Capability'
-                Service        = $_.Service
-                LocationCode   = ''
-                Detail         = "$($_.Category): $($_.Name)"
-                Status         = $_.Status
-                ZoneRedundant  = $_.ZoneRedundant
-                Notes          = $_.Restriction
-            })
-        }
-    }
-    if ($allPgCaps.Count -gt 0) {
-        $allPgCaps | ForEach-Object {
-            $accessRows.Add([PSCustomObject][ordered]@{
-                SubscriptionId   = $_.SubscriptionId
-                SubscriptionName = $_.SubscriptionName
-                DataType         = 'PostgreSQL Capability'
-                Service        = $_.Service
-                LocationCode   = $_.Location
-                Detail         = "GeoBackup=$($_.GeoBackupSupported) ZoneRedundantHA=$($_.ZoneRedundantHA)"
-                Status         = $_.Restricted
-                ZoneRedundant  = $_.ZoneRedundantHA
-                Notes          = $_.Reason
-            })
-        }
-    }
-    if ($accessRows.Count -gt 0) {
-        $accessRows | Export-Csv -Path $accessCsv -NoTypeInformation -Encoding UTF8
-        Write-Host "  Region/access → $accessCsv" -ForegroundColor Green
+    # Region & zone access
+    if ($regionAccess.Count -gt 0) {
+        $accessCsv = Join-Path $defaultDir "AzDbQuota-Access-${timestamp}.csv"
+        $regionAccess | Select-Object $accessProps | Export-Csv -Path $accessCsv -NoTypeInformation -Encoding UTF8
+        Write-Host "  Region/access    → $accessCsv" -ForegroundColor Green
     } else {
         Write-Host '  No region/access data to export.' -ForegroundColor DarkGray
+    }
+
+    # SQL capabilities
+    if ($IncludeCapabilities -and $allSqlCaps.Count -gt 0) {
+        $sqlCapsCsv = Join-Path $defaultDir "AzDbQuota-SQLMICaps-${timestamp}.csv"
+        $allSqlCaps | Select-Object $sqlCapProps | Export-Csv -Path $sqlCapsCsv -NoTypeInformation -Encoding UTF8
+        Write-Host "  SQL capabilities → $sqlCapsCsv" -ForegroundColor Green
+    }
+
+    # PostgreSQL capabilities
+    if ($IncludeCapabilities -and $allPgCaps.Count -gt 0) {
+        $pgCapsCsv = Join-Path $defaultDir "AzDbQuota-PostgresCaps-${timestamp}.csv"
+        $allPgCaps | Select-Object $pgCapProps | Export-Csv -Path $pgCapsCsv -NoTypeInformation -Encoding UTF8
+        Write-Host "  PgSQL capabilities → $pgCapsCsv" -ForegroundColor Green
+    }
+
+    # MySQL capabilities
+    if ($IncludeCapabilities -and $allMySqlCaps.Count -gt 0) {
+        $mysqlCapsCsv = Join-Path $defaultDir "AzDbQuota-MySQLCaps-${timestamp}.csv"
+        $allMySqlCaps | Select-Object $mysqlCapProps | Export-Csv -Path $mysqlCapsCsv -NoTypeInformation -Encoding UTF8
+        Write-Host "  MySQL capabilities → $mysqlCapsCsv" -ForegroundColor Green
     }
 }
 
