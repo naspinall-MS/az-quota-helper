@@ -30,8 +30,9 @@
     Also queries SQL edition/tier availability, SQL MI zone-redundancy per hardware family,
     and PostgreSQL regional capabilities.
 
-.PARAMETER OutputPath
-    Optional CSV path to export quota/usage rows.
+.PARAMETER OutputDir
+    Optional path to a directory. If provided, all CSVs are written there automatically
+    without prompting, using timestamped filenames.
 
 .EXAMPLE
     .\Get-AzDatabaseQuota.ps1 -SubscriptionId 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx' -Location 'eastus'
@@ -62,7 +63,7 @@ param(
     [switch] $IncludeCapabilities,
 
     [Parameter()]
-    [string] $OutputPath
+    [string] $OutputDir
 )
 
 Set-StrictMode -Version 1
@@ -1099,57 +1100,47 @@ if ($IncludeCapabilities -and $runMySQL -and $allMySqlCaps.Count -gt 0) {
 }
 
 # ── CSV Export ────────────────────────────────────────────────────────────────
-# Legacy -OutputPath support (quota/usage only)
-if ($OutputPath) {
-    $allUsage | Export-Csv -Path $OutputPath -NoTypeInformation -Encoding UTF8
-    Write-Host ''
-    Write-Host "  Quota/usage exported to: $OutputPath" -ForegroundColor Green
-}
+$timestamp  = Get-Date -Format 'yyyyMMdd-HHmmss'
 
-# Interactive export prompt
-Write-Host ''
-$exportAnswer = Read-Host '  Export results to CSV? (y/n)'
-if ($exportAnswer -match '^(y|yes)$') {
-    $timestamp  = Get-Date -Format 'yyyyMMdd-HHmmss'
-    $defaultDir = if ($OutputPath) { Split-Path $OutputPath } else { $PWD.Path }
-
-    # Quota & usage
+function Export-ResultCsvs {
+    param([string] $Dir)
     if ($allUsage.Count -gt 0) {
-        $usageCsv = Join-Path $defaultDir "AzDbQuota-Usage-${timestamp}.csv"
-        $allUsage | Select-Object $usageProps | Export-Csv -Path $usageCsv -NoTypeInformation -Encoding UTF8
-        Write-Host "  Quota/usage      → $usageCsv" -ForegroundColor Green
+        $allUsage | Select-Object $usageProps | Export-Csv -Path (Join-Path $Dir "AzDbQuota-Usage-${timestamp}.csv") -NoTypeInformation -Encoding UTF8
+        Write-Host "  Quota/usage        → $(Join-Path $Dir "AzDbQuota-Usage-${timestamp}.csv")" -ForegroundColor Green
     } else {
         Write-Host '  No quota/usage data to export.' -ForegroundColor DarkGray
     }
-
-    # Region & zone access
     if ($regionAccess.Count -gt 0) {
-        $accessCsv = Join-Path $defaultDir "AzDbQuota-Access-${timestamp}.csv"
-        $regionAccess | Select-Object $accessProps | Export-Csv -Path $accessCsv -NoTypeInformation -Encoding UTF8
-        Write-Host "  Region/access    → $accessCsv" -ForegroundColor Green
+        $regionAccess | Select-Object $accessProps | Export-Csv -Path (Join-Path $Dir "AzDbQuota-Access-${timestamp}.csv") -NoTypeInformation -Encoding UTF8
+        Write-Host "  Region/access      → $(Join-Path $Dir "AzDbQuota-Access-${timestamp}.csv")" -ForegroundColor Green
     } else {
         Write-Host '  No region/access data to export.' -ForegroundColor DarkGray
     }
-
-    # SQL capabilities
     if ($IncludeCapabilities -and $allSqlCaps.Count -gt 0) {
-        $sqlCapsCsv = Join-Path $defaultDir "AzDbQuota-SQLMICaps-${timestamp}.csv"
-        $allSqlCaps | Select-Object $sqlCapProps | Export-Csv -Path $sqlCapsCsv -NoTypeInformation -Encoding UTF8
-        Write-Host "  SQL capabilities → $sqlCapsCsv" -ForegroundColor Green
+        $allSqlCaps | Select-Object $sqlCapProps | Export-Csv -Path (Join-Path $Dir "AzDbQuota-SQLMICaps-${timestamp}.csv") -NoTypeInformation -Encoding UTF8
+        Write-Host "  SQL capabilities   → $(Join-Path $Dir "AzDbQuota-SQLMICaps-${timestamp}.csv")" -ForegroundColor Green
     }
-
-    # PostgreSQL capabilities
     if ($IncludeCapabilities -and $allPgCaps.Count -gt 0) {
-        $pgCapsCsv = Join-Path $defaultDir "AzDbQuota-PostgresCaps-${timestamp}.csv"
-        $allPgCaps | Select-Object $pgCapProps | Export-Csv -Path $pgCapsCsv -NoTypeInformation -Encoding UTF8
-        Write-Host "  PgSQL capabilities → $pgCapsCsv" -ForegroundColor Green
+        $allPgCaps | Select-Object $pgCapProps | Export-Csv -Path (Join-Path $Dir "AzDbQuota-PostgresCaps-${timestamp}.csv") -NoTypeInformation -Encoding UTF8
+        Write-Host "  PgSQL capabilities → $(Join-Path $Dir "AzDbQuota-PostgresCaps-${timestamp}.csv")" -ForegroundColor Green
     }
-
-    # MySQL capabilities
     if ($IncludeCapabilities -and $allMySqlCaps.Count -gt 0) {
-        $mysqlCapsCsv = Join-Path $defaultDir "AzDbQuota-MySQLCaps-${timestamp}.csv"
-        $allMySqlCaps | Select-Object $mysqlCapProps | Export-Csv -Path $mysqlCapsCsv -NoTypeInformation -Encoding UTF8
-        Write-Host "  MySQL capabilities → $mysqlCapsCsv" -ForegroundColor Green
+        $allMySqlCaps | Select-Object $mysqlCapProps | Export-Csv -Path (Join-Path $Dir "AzDbQuota-MySQLCaps-${timestamp}.csv") -NoTypeInformation -Encoding UTF8
+        Write-Host "  MySQL capabilities → $(Join-Path $Dir "AzDbQuota-MySQLCaps-${timestamp}.csv")" -ForegroundColor Green
+    }
+}
+
+if ($OutputDir) {
+    if (-not (Test-Path $OutputDir -PathType Container)) {
+        New-Item -ItemType Directory -Path $OutputDir | Out-Null
+    }
+    Write-Host ''
+    Export-ResultCsvs -Dir $OutputDir
+} else {
+    Write-Host ''
+    $exportAnswer = Read-Host '  Export results to CSV? (y/n)'
+    if ($exportAnswer -match '^(y|yes)$') {
+        Export-ResultCsvs -Dir $PWD.Path
     }
 }
 
