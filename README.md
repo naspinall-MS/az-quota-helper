@@ -106,9 +106,9 @@ At the end of each run the script prompts whether to export results to CSV. Each
 |---|---|---|
 | `AzDbQuota-Usage-<timestamp>.csv` | Quota and usage data | Always |
 | `AzDbQuota-Access-<timestamp>.csv` | Region and zone access | Always |
-| `AzDbQuota-SQLMICaps-<timestamp>.csv` | SQL DB edition and SQL MI hardware family availability | `-IncludeCapabilities` |
-| `AzDbQuota-PostgresCaps-<timestamp>.csv` | PostgreSQL regional capability flags | `-IncludeCapabilities` |
-| `AzDbQuota-MySQLCaps-<timestamp>.csv` | MySQL regional capability flags | `-IncludeCapabilities` |
+| `AzDbQuota-SQLMICaps-<timestamp>.csv` | SQL DB edition and SQL MI hardware family availability | `IncludeCapabilities` |
+| `AzDbQuota-PostgresCaps-<timestamp>.csv` | PostgreSQL regional capability flags | `IncludeCapabilities` |
+| `AzDbQuota-MySQLCaps-<timestamp>.csv` | MySQL regional capability flags | `IncludeCapabilities` |
 
 ## How it works
 
