@@ -183,6 +183,19 @@ function Invoke-ArmGet {
         }
         Write-Warning "  API call failed (HTTP $code): $($_.Exception.Message)"
         Write-Warning "  URI: $Uri"
+        # Log the Azure error body (PS7: $_.ErrorDetails.Message contains the JSON response body)
+        if ($_.ErrorDetails?.Message) {
+            try {
+                $errBody = $_.ErrorDetails.Message | ConvertFrom-Json -ErrorAction SilentlyContinue
+                if ($errBody?.error) {
+                    Write-Warning "  Azure error: [$($errBody.error.code)] $($errBody.error.message)"
+                } else {
+                    Write-Warning "  Response body: $($_.ErrorDetails.Message)"
+                }
+            } catch {
+                Write-Warning "  Response body: $($_.ErrorDetails.Message)"
+            }
+        }
         $null
     }
 }
@@ -253,11 +266,12 @@ function Get-SqlDbUsage {
         return
     }
 
-    $p      = $resp.properties
-    $metric = if ($p.PSObject.Properties['displayName'] -and $p.displayName) { $p.displayName.TrimEnd('.') } else { $usageName }
-    $unit   = if ($p.PSObject.Properties['unit']        -and $p.unit)        { $p.unit }        else { 'Count' }
+    $p       = $resp.properties
+    $metric  = if ($p.PSObject.Properties['displayName'] -and $p.displayName) { $p.displayName.TrimEnd('.') } else { $usageName }
+    $unit    = if ($p.PSObject.Properties['unit']        -and $p.unit)        { $p.unit }        else { 'Count' }
+    $normLoc = $Location.ToLower() -replace '[\s-]', ''
 
-    New-UsageRow -SubscriptionId $SubscriptionId -SubscriptionName $SubscriptionName -Service 'SQL DB' -Scope 'Region' -Metric $metric `
+    New-UsageRow -SubscriptionId $SubscriptionId -SubscriptionName $SubscriptionName -Service 'SQL DB' -Scope "Region ($normLoc)" -Metric $metric `
         -CurrentValue $p.currentValue -Limit $p.limit -Unit $unit
 }
 
@@ -274,6 +288,7 @@ function Get-SqlMiUsage {
         return
     }
 
+    $normLoc = $Location.ToLower() -replace '[\s-]', ''
     foreach ($item in $resp.value) {
         $id = if ($item.PSObject.Properties['name']) { $item.name } else { '' }
         # Filter to MI-related usage names only
@@ -283,7 +298,7 @@ function Get-SqlMiUsage {
         $metric = if ($p.PSObject.Properties['displayName'] -and $p.displayName) { $p.displayName } else { $id }
         $unit   = if ($p.PSObject.Properties['unit']        -and $p.unit)        { $p.unit }        else { 'Count' }
 
-        New-UsageRow -SubscriptionId $SubscriptionId -SubscriptionName $SubscriptionName -Service 'SQL MI' -Scope 'Region' -Metric $metric `
+        New-UsageRow -SubscriptionId $SubscriptionId -SubscriptionName $SubscriptionName -Service 'SQL MI' -Scope "Region ($normLoc)" -Metric $metric `
             -CurrentValue $p.currentValue -Limit $p.limit -Unit $unit
     }
 }
@@ -553,8 +568,7 @@ function Get-CosmosDbUsage {
 
 function Get-PostgreSqlRegionAccess {
     # Returns a region-access row for the $regionAccess table.
-    # ARM does not expose a quota_usages endpoint for PostgreSQL Flexible Server;
-    # the capabilities API 'restricted' flag surfaces provisioning blocks instead.
+    # The capabilities API 'restricted' flag surfaces provisioning blocks.
     param([string] $Token, [string] $SubscriptionId, [string] $SubscriptionName, [string] $Location,
           [bool]   $RegionHasAZ = $true)   # Whether the region has AZ infrastructure (from ARM locations API)
 
@@ -591,8 +605,6 @@ function Get-PostgreSqlRegionAccess {
 
 function Get-PostgreSqlCapabilities {
     # Returns regional Flexible Server capability flags (geo-backup, zone-redundant HA, etc.).
-    # Note: ARM does not expose a quota_usages endpoint for PostgreSQL Flexible Server.
-    # Use AccessAllowedForRegion in the Region & Zone Access section to detect provisioning blocks.
     param([string] $Token, [string] $SubscriptionId, [string] $SubscriptionName, [string] $Location)
 
     $uri  = "https://management.azure.com/subscriptions/$SubscriptionId/providers" +
@@ -618,6 +630,31 @@ function Get-PostgreSqlCapabilities {
         StorageAutoGrowth        = if ($cap.PSObject.Properties['storageAutoGrowthSupported'])              { $cap.storageAutoGrowthSupported }              else { 'Unknown' }
         Restricted               = if ($cap.PSObject.Properties['restricted'])                              { $cap.restricted }                              else { 'Unknown' }
         Reason                   = if ($cap.PSObject.Properties['reason'] -and $cap.reason)                { $cap.reason }                                  else { '' }
+    }
+}
+
+function Get-PostgreSqlUsage {
+    # Queries per-SKU-family vCore quota for PostgreSQL Flexible Server.
+    # API: providers/Microsoft.DBforPostgreSQL/locations/{loc}/resourceType/flexibleServers/usages
+    param([string] $Token, [string] $SubscriptionId, [string] $SubscriptionName, [string] $Location)
+
+    $uri  = "https://management.azure.com/subscriptions/$SubscriptionId/providers" +
+            "/Microsoft.DBforPostgreSQL/locations/$Location/resourceType/flexibleServers/usages?api-version=2025-06-01-preview"
+    $rows = Invoke-ArmGetAll -Token $Token -Uri $uri
+    if (-not $rows -or $rows.Count -eq 0) {
+        Write-Host "  Note (PostgreSQL): no quota usage data returned for '$Location'." -ForegroundColor DarkGray
+        return
+    }
+
+    $normLoc = $Location.ToLower() -replace '[\s-]', ''
+    foreach ($q in $rows) {
+        $metric = if ($q.name.PSObject.Properties['localizedValue'] -and $q.name.localizedValue) {
+                      $q.name.localizedValue
+                  } else { $q.name.value }
+        $unit   = if ($q.PSObject.Properties['unit'] -and $q.unit) { $q.unit } else { 'Count' }
+        New-UsageRow -SubscriptionId $SubscriptionId -SubscriptionName $SubscriptionName `
+            -Service 'PostgreSQL Flex' -Scope "Region ($normLoc)" -Metric $metric `
+            -CurrentValue $q.currentValue -Limit $q.limit -Unit $unit
     }
 }
 
@@ -890,6 +927,7 @@ foreach ($subId in $SubscriptionId) {
     $fnCosUsage          = ${function:Get-CosmosDbUsage}.ToString()
     $fnPgRegAccess       = ${function:Get-PostgreSqlRegionAccess}.ToString()
     $fnPgCaps            = ${function:Get-PostgreSqlCapabilities}.ToString()
+    $fnPgUsage           = ${function:Get-PostgreSqlUsage}.ToString()
     $fnMySqlRegAccess    = ${function:Get-MySqlRegionAccess}.ToString()
     $fnMySqlCaps         = ${function:Get-MySqlCapabilities}.ToString()
 
@@ -929,6 +967,7 @@ foreach ($subId in $SubscriptionId) {
         . ([ScriptBlock]::Create("function Get-CosmosDbUsage { $($using:fnCosUsage) }"))
         . ([ScriptBlock]::Create("function Get-PostgreSqlRegionAccess { $($using:fnPgRegAccess) }"))
         . ([ScriptBlock]::Create("function Get-PostgreSqlCapabilities { $($using:fnPgCaps) }"))
+        . ([ScriptBlock]::Create("function Get-PostgreSqlUsage { $($using:fnPgUsage) }"))
         . ([ScriptBlock]::Create("function Get-MySqlRegionAccess { $($using:fnMySqlRegAccess) }"))
         . ([ScriptBlock]::Create("function Get-MySqlCapabilities { $($using:fnMySqlCaps) }"))
 
@@ -981,6 +1020,8 @@ foreach ($subId in $SubscriptionId) {
 
         # ── PostgreSQL ───────────────────────────────────────────────────────
         if ($runPg) {
+            $rows = @(Get-PostgreSqlUsage -Token $token -SubscriptionId $subId -SubscriptionName $subName -Location $loc)
+            if ($rows) { foreach ($r in $rows) { $usageBag.Add($r) } }
             $pgRow = Get-PostgreSqlRegionAccess -Token $token -SubscriptionId $subId -SubscriptionName $subName -Location $loc `
                 -RegionHasAZ $locHasAZ
             if ($pgRow) { $accessBag.Add($pgRow) }
@@ -1029,9 +1070,6 @@ if ($allUsage.Count -gt 0) {
     Write-Warning 'No usage data returned. Verify the subscription ID(s) and location name(s) are correct.'
 }
 
-if ($runPostgres) {
-    Write-Host '  Note (PostgreSQL): ARM does not expose a quota_usages endpoint for Flexible Server; region access is derived from capabilities.' -ForegroundColor DarkGray
-}
 if ($runMySQL) {
     Write-Host '  Note (MySQL): ARM does not expose a quota_usages endpoint for MySQL Flexible Server; region access is derived from capabilities.' -ForegroundColor DarkGray
 }

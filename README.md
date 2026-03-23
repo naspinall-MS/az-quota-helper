@@ -9,10 +9,10 @@ A PowerShell script that reports quota limits, current usage, and regional acces
 | SQL Database | vCore quota (RegionalVCoreQuotaForSQLDBAndDW) | ✓ | ✓ |
 | SQL Managed Instance | vCore quota + subnet/instance pool counts | ✓ | ✓ |
 | Cosmos DB | Database account counts (subscription + per-region) | ✓ | ✓ |
-| PostgreSQL Flexible Server | Provisioning block detection | ✓ | ✓ |
+| PostgreSQL Flexible Server | Per-SKU-family vCore quota | ✓ | ✓ |
 | MySQL Flexible Server | Provisioning block detection | ✓ | ✓ |
 
-> **Note:** PostgreSQL and MySQL do not expose quota/usage endpoints via ARM. Regional access is derived from the capabilities API instead.
+> **Note:** MySQL does not expose a quota/usage endpoint via ARM. Regional access is derived from the capabilities API instead.
 
 ## Requirements
 
@@ -30,7 +30,7 @@ Install-Module Az.Accounts, Az.Resources -Scope CurrentUser
 All parameters are optional. If omitted, the script prompts interactively.
 
 ```powershell
-.\Get-AzDBServiceQuota.ps1 [-SubscriptionId <string[]>] [-Location <string[]>] [-Services <string[]>] [-IncludeCapabilities] [-OutputPath <string>]
+.\Get-AzDBServiceQuota.ps1 [-SubscriptionId <string[]>] [-Location <string[]>] [-Services <string[]>] [-IncludeCapabilities] [-OutputDir <string>]
 ```
 
 ### Parameters
@@ -41,7 +41,7 @@ All parameters are optional. If omitted, the script prompts interactively.
 | `-Location` | `string[]` | One or more Azure region names (e.g. `eastus`, `westeurope`). Accepts mixed casing and hyphenated formats. Prompts if omitted. |
 | `-Services` | `string[]` | Services to query. Valid values: `All`, `CosmosDB`, `SqlDB`, `SqlMI`, `PostgreSQL`, `MySQL`. Defaults to `All` if Enter is pressed at the prompt. |
 | `-IncludeCapabilities` | `switch` | Also outputs SQL edition/tier availability, SQL MI hardware family zone-redundancy support, PostgreSQL regional capability flags, and MySQL regional capability flags (HA modes, geo-backup support). |
-| `-OutputPath` | `string` | Optional CSV path. If provided, quota/usage data is exported here in addition to the interactive export prompt at the end of the run. |
+| `-OutputDir` | `string` | Optional path to a directory. If provided, all CSVs are written there automatically without prompting. The directory is created if it does not exist. |
 
 ### Examples
 
@@ -55,8 +55,8 @@ All parameters are optional. If omitted, the script prompts interactively.
 # Include SQL/PostgreSQL/MySQL capability detail
 .\.Get-AzDBServiceQuota.ps1 -SubscriptionId '<id>' -Location 'eastus' -Services SqlDB,SqlMI -IncludeCapabilities
 
-# Export quota/usage to a specific path
-.\.Get-AzDBServiceQuota.ps1 -SubscriptionId '<id>' -Location 'eastus' -Services CosmosDB,PostgreSQL -OutputPath C:\Temp\quota.csv
+# Export all results to a directory (no prompt)
+.\.Get-AzDBServiceQuota.ps1 -SubscriptionId '<id>' -Location 'eastus' -Services CosmosDB,PostgreSQL -OutputDir C:\Temp
 ```
 
 ## Output
