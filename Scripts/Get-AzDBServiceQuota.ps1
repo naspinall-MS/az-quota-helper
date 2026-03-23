@@ -170,11 +170,15 @@ function Invoke-ArmGet {
         'Content-Type' = 'application/json'
     }
     try {
-        Invoke-RestMethod -Method Get -Uri $Uri -Headers $headers
+        Invoke-RestMethod -Method Get -Uri $Uri -Headers $headers -TimeoutSec 30
     } catch {
         $code = $_.Exception.Response?.StatusCode?.value__
         if ($code -eq 404 -and $QuietNotFound) {
             # Caller will handle the null return with an informational message
+            return $null
+        }
+        # 400 NoRegisteredProviderFound = service not available in this region; treat as not-found
+        if ($code -eq 400 -and $QuietNotFound -and $_.ErrorDetails?.Message -match 'NoRegisteredProviderFound') {
             return $null
         }
         if ($code -ge 500 -and $code -lt 600 -and $QuietServerError) {
@@ -204,12 +208,13 @@ function Invoke-ArmGetAll {
     # Handles nextLink pagination and returns a flat list of value items.
     param(
         [Parameter(Mandatory)][string] $Token,
-        [Parameter(Mandatory)][string] $Uri
+        [Parameter(Mandatory)][string] $Uri,
+        [switch] $QuietNotFound    # Passed through to Invoke-ArmGet
     )
     $items = [System.Collections.Generic.List[object]]::new()
     $next  = $Uri
     do {
-        $page = Invoke-ArmGet -Token $Token -Uri $next
+        $page = Invoke-ArmGet -Token $Token -Uri $next -QuietNotFound:$QuietNotFound
         if (-not $page) { break }
         if ($page.value) { $items.AddRange([object[]]$page.value) }
         $next = $page.nextLink
@@ -267,7 +272,9 @@ function Get-SqlDbUsage {
     }
 
     $p       = $resp.properties
-    $metric  = if ($p.PSObject.Properties['displayName'] -and $p.displayName) { $p.displayName.TrimEnd('.') } else { $usageName }
+    $metric  = if ($p.PSObject.Properties['displayName'] -and $p.displayName) {
+                   $p.displayName.TrimEnd('.') -replace '\s+for\s+\S+$', ''
+               } else { $usageName }
     $unit    = if ($p.PSObject.Properties['unit']        -and $p.unit)        { $p.unit }        else { 'Count' }
     $normLoc = $Location.ToLower() -replace '[\s-]', ''
 
@@ -277,6 +284,8 @@ function Get-SqlDbUsage {
 
 function Get-SqlMiUsage {
     # SQL MI usages are returned by the list endpoint alongside DB usages.
+    # Returns total region vCore quota, per-hardware-generation vCore quotas, and subnet quota.
+    # Excludes free-MI offer quota metrics.
     # Response items: { properties: { displayName, currentValue, limit, unit }, name (string), id, type }
     param([string] $Token, [string] $SubscriptionId, [string] $SubscriptionName, [string] $Location)
 
@@ -291,10 +300,17 @@ function Get-SqlMiUsage {
     $normLoc = $Location.ToLower() -replace '[\s-]', ''
     foreach ($item in $resp.value) {
         $id = if ($item.PSObject.Properties['name']) { $item.name } else { '' }
-        # Filter to MI-related usage names only
-        if ($id -notmatch 'ManagedInstance|SqlMI|SubnetForSqlMI|InstancePool') { continue }
+        $p  = $item.properties
 
-        $p      = $item.properties
+        # Determine whether this item belongs to SQL MI (not SQL DB/DW).
+        # Primary: name contains ManagedInstance, SqlMI, or SubnetFor...Instance.
+        # Fallback: displayName is 'VCore Quota' or 'Subnet Quota' (total-region / subnet items
+        # whose names may not contain the above tokens).
+        $dn = if ($p -and $p.PSObject.Properties['displayName']) { $p.displayName } else { '' }
+        $isMiItem = ($id -match 'ManagedInstance|SqlMI|SubnetFor') -or
+                    ($dn -match '^VCore Quota$|^Subnet Quota$')
+        if (-not $isMiItem) { continue }
+        if ($id -match 'Free') { continue }
         $metric = if ($p.PSObject.Properties['displayName'] -and $p.displayName) { $p.displayName } else { $id }
         $unit   = if ($p.PSObject.Properties['unit']        -and $p.unit)        { $p.unit }        else { 'Count' }
 
@@ -636,13 +652,16 @@ function Get-PostgreSqlCapabilities {
 function Get-PostgreSqlUsage {
     # Queries per-SKU-family vCore quota for PostgreSQL Flexible Server.
     # API: providers/Microsoft.DBforPostgreSQL/locations/{loc}/resourceType/flexibleServers/usages
+    # Note: the quota endpoint has a narrower set of supported locations than deployment itself.
+    # Regions like austriaeast that are deployable but not yet covered by the quota endpoint
+    # return NoRegisteredProviderFound (400), which is suppressed and logged as a note.
     param([string] $Token, [string] $SubscriptionId, [string] $SubscriptionName, [string] $Location)
 
     $uri  = "https://management.azure.com/subscriptions/$SubscriptionId/providers" +
             "/Microsoft.DBforPostgreSQL/locations/$Location/resourceType/flexibleServers/usages?api-version=2025-06-01-preview"
-    $rows = Invoke-ArmGetAll -Token $Token -Uri $uri
+    $rows = Invoke-ArmGetAll -Token $Token -Uri $uri -QuietNotFound
     if (-not $rows -or $rows.Count -eq 0) {
-        Write-Host "  Note (PostgreSQL): no quota usage data returned for '$Location'." -ForegroundColor DarkGray
+        Write-Host "  Note (PostgreSQL): quota endpoint does not cover '$Location' (region may still support deployment)." -ForegroundColor DarkGray
         return
     }
 
@@ -663,9 +682,9 @@ function Get-PostgreSqlUsage {
 #region ── MySQL Flexible Server ────────────────────────────────────────────────
 
 function Get-MySqlRegionAccess {
-    # restricted = 'Enabled' means the subscription cannot provision in this region.
-    # ZoneRedundant HA: derived from supportedHAMode[] containing 'ZoneRedundant' (MySQL Flex
-    # expresses this as an array rather than a boolean flag like PostgreSQL).
+    # An empty value[] means MySQL Flex Server is not available in this region (region restricted).
+    # ZoneRedundant HA: derived from supportedHAMode[] containing 'ZoneRedundant' on any zone item.
+    # The capabilities API has no 'restricted' field; availability is inferred from the response body.
     param([string] $Token, [string] $SubscriptionId, [string] $SubscriptionName, [string] $Location,
           [bool]   $RegionHasAZ = $true)   # Whether the region has AZ infrastructure (from ARM locations API)
 
@@ -677,16 +696,16 @@ function Get-MySqlRegionAccess {
         return $null
     }
 
-    $isRestricted = $false
+    # Empty value array = MySQL Flex not provisioned/available for this region
+    $isRestricted = ($resp.value.Count -eq 0)
     $zrSupported  = $false
     foreach ($item in $resp.value) {
-        if ($item.PSObject.Properties['restricted'] -and $item.restricted -eq 'Enabled') { $isRestricted = $true }
         if ($item.PSObject.Properties['supportedHAMode'] -and $item.supportedHAMode -contains 'ZoneRedundant') { $zrSupported = $true }
     }
 
     $normLoc = $Location.ToLower() -replace '[\s-]', ''
     $notes   = [System.Collections.Generic.List[string]]::new()
-    if ($isRestricted -and $RegionHasAZ -and -not $zrSupported) { $notes.Add('Region and AZ access blocked - open support request') }
+    if ($isRestricted -and $RegionHasAZ)                         { $notes.Add('Region and AZ access blocked - open support request') }
     elseif ($isRestricted)                                       { $notes.Add('Region access blocked - open support request') }
     elseif ($RegionHasAZ -and -not $zrSupported)                 { $notes.Add('AZ access blocked - open support request') }
 
@@ -702,37 +721,34 @@ function Get-MySqlRegionAccess {
 }
 
 function Get-MySqlCapabilities {
-    # Returns regional Flexible Server capability flags (HA modes, geo-backup support, etc.).
+    # Returns per-zone Flexible Server capability flags (HA modes, geo-backup support, etc.).
+    # Response items are per availability zone: zone "none" plus named zones ("1", "2", "3").
+    # An empty value[] means MySQL Flex is not available in this region.
     param([string] $Token, [string] $SubscriptionId, [string] $SubscriptionName, [string] $Location)
 
     $uri  = "https://management.azure.com/subscriptions/$SubscriptionId/providers" +
             "/Microsoft.DBforMySQL/locations/$Location/capabilities?api-version=2023-12-30"
     $resp = Invoke-ArmGet -Token $Token -Uri $uri -QuietNotFound
-    if (-not $resp -or -not $resp.PSObject.Properties['value']) {
+    if (-not $resp -or -not $resp.PSObject.Properties['value'] -or $resp.value.Count -eq 0) {
         Write-Host "  Note (MySQL): capabilities data not available for '$Location'." -ForegroundColor DarkGray
         return
     }
 
     $normLoc = $Location.ToLower() -replace '[\s-]', ''
     foreach ($item in $resp.value) {
-        $haModes    = if ($item.PSObject.Properties['supportedHAMode'])         { $item.supportedHAMode -join ', ' }  else { 'Unknown' }
-        $zrHA       = if ($item.PSObject.Properties['supportedHAMode'])         { ($item.supportedHAMode -contains 'ZoneRedundant') } else { 'Unknown' }
-        $geoBackup  = if ($item.PSObject.Properties['supportedGeoBackupRegions']) {
-                          $item.supportedGeoBackupRegions.PSObject.Properties.Count -gt 0
-                      } else { 'Unknown' }
-        $restricted = if ($item.PSObject.Properties['restricted'])              { $item.restricted }                  else { 'Unknown' }
-        $reason     = if ($item.PSObject.Properties['reason'] -and $item.reason){ $item.reason }                    else { '' }
+        $haModes   = if ($item.PSObject.Properties['supportedHAMode'])            { $item.supportedHAMode -join ', ' }       else { 'Unknown' }
+        $zrHA      = if ($item.PSObject.Properties['supportedHAMode'])            { ($item.supportedHAMode -contains 'ZoneRedundant') } else { 'Unknown' }
+        $geoBackup = if ($item.PSObject.Properties['supportedGeoBackupRegions']) { $item.supportedGeoBackupRegions.Count -gt 0 } else { 'Unknown' }
 
         [PSCustomObject][ordered]@{
-            SubscriptionId   = $SubscriptionId
-            SubscriptionName = $SubscriptionName
-            Service          = 'MySQL Flex'
-            Location         = $normLoc
-            ZoneRedundantHA  = $zrHA
+            SubscriptionId     = $SubscriptionId
+            SubscriptionName   = $SubscriptionName
+            Service            = 'MySQL Flex'
+            Location           = $normLoc
+            Zone               = if ($item.PSObject.Properties['zone']) { $item.zone } else { 'Unknown' }
+            ZoneRedundantHA    = $zrHA
             GeoBackupSupported = $geoBackup
-            SupportedHAModes = $haModes
-            Restricted       = $restricted
-            Reason           = $reason
+            SupportedHAModes   = $haModes
         }
     }
 }
@@ -748,7 +764,7 @@ function Register-RequiredProviders {
 
     # Query all providers in parallel (one Az call per namespace, independent of each other)
     $results = $Namespaces | ForEach-Object -Parallel {
-        $state = (Get-AzResourceProvider -ProviderNamespace $_ -ErrorAction SilentlyContinue).RegistrationState
+        $state = (Get-AzResourceProvider -ProviderNamespace $_ -ErrorAction SilentlyContinue -WarningAction SilentlyContinue).RegistrationState
         [PSCustomObject]@{ Namespace = $_; State = $state }
     } -ThrottleLimit 5
 
@@ -1058,8 +1074,8 @@ $usageProps  = @('SubscriptionName','SubscriptionId','Service','Scope','Metric',
 $accessProps = @('SubscriptionName','SubscriptionId','Service','LocationCode','AccessAllowedForRegion','AccessAllowedForAZ','Notes')
 $warnProps   = @('SubscriptionName','SubscriptionId','Service','Scope','Metric','CurrentUsage','Limit','PercentUsed')
 $sqlCapProps = @('SubscriptionName','SubscriptionId','Service','Category','Name','Status','ZoneRedundant','Restriction')
-$pgCapProps    = @('SubscriptionName','SubscriptionId','Service','Location','GeoBackupSupported','ZoneRedundantHA','ZoneRedundantHAAndGeoBck','OnlineResizeSupported','StorageAutoGrowth')
-$mysqlCapProps = @('SubscriptionName','SubscriptionId','Service','Location','ZoneRedundantHA','GeoBackupSupported','SupportedHAModes','Restricted','Reason')
+$pgCapProps    = @('SubscriptionName','SubscriptionId','Service','Location','GeoBackupSupported','ZoneRedundantHA','ZoneRedundantHAAndGeoBck','OnlineResizeSupported','StorageAutoGrowth','Restricted','Reason')
+$mysqlCapProps = @('SubscriptionName','SubscriptionId','Service','Location','Zone','ZoneRedundantHA','GeoBackupSupported','SupportedHAModes')
 
 # ── Quota & Usage table ───────────────────────────────────────────────────────
 Write-Host ''
@@ -1103,12 +1119,6 @@ if ($IncludeCapabilities -and ($runSqlDb -or $runSqlMi) -and $allSqlCaps.Count -
     Write-Host ''
     Write-Host ('── SQL Regional Capabilities ' + ('─' * 42)) -ForegroundColor Cyan
     $allSqlCaps | Format-Table -AutoSize -Property $sqlCapProps
-
-    $restricted = $allSqlCaps | Where-Object { $_.Status -notin @('Available', 'Default', 'Visible') }
-    if ($restricted) {
-        Write-Host ('── Restricted/Unavailable SQL Tiers ' + ('─' * 35)) -ForegroundColor Red
-        $restricted | Format-Table -AutoSize -Property $sqlCapProps
-    }
 }
 
 # ── PostgreSQL Regional Capabilities ─────────────────────────────────────────
@@ -1116,12 +1126,6 @@ if ($IncludeCapabilities -and $runPostgres -and $allPgCaps.Count -gt 0) {
     Write-Host ''
     Write-Host ('── PostgreSQL Regional Capabilities ' + ('─' * 35)) -ForegroundColor Cyan
     $allPgCaps | Format-Table -AutoSize -Property $pgCapProps
-
-    if ($allPgCaps | Where-Object { $_.Restricted -eq 'Enabled' }) {
-        Write-Host ('── PostgreSQL Provisioning Restriction ' + ('─' * 32)) -ForegroundColor Red
-        $allPgCaps | Where-Object { $_.Restricted -eq 'Enabled' } |
-            Format-Table -AutoSize -Property Service, Location, Restricted, Reason
-    }
 }
 
 # ── MySQL Regional Capabilities ───────────────────────────────────────────────
@@ -1129,12 +1133,6 @@ if ($IncludeCapabilities -and $runMySQL -and $allMySqlCaps.Count -gt 0) {
     Write-Host ''
     Write-Host ('── MySQL Regional Capabilities ' + ('─' * 40)) -ForegroundColor Cyan
     $allMySqlCaps | Format-Table -AutoSize -Property $mysqlCapProps
-
-    if ($allMySqlCaps | Where-Object { $_.Restricted -eq 'Enabled' }) {
-        Write-Host ('── MySQL Provisioning Restriction ' + ('─' * 37)) -ForegroundColor Red
-        $allMySqlCaps | Where-Object { $_.Restricted -eq 'Enabled' } |
-            Format-Table -AutoSize -Property Service, Location, Restricted, Reason
-    }
 }
 
 # ── CSV Export ────────────────────────────────────────────────────────────────

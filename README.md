@@ -6,8 +6,8 @@ A PowerShell script that reports quota limits, current usage, and regional acces
 
 | Service | Quota / Usage | Region access | AZ access |
 |---|---|---|---|
-| SQL Database | vCore quota (RegionalVCoreQuotaForSQLDBAndDW) | ✓ | ✓ |
-| SQL Managed Instance | vCore quota + subnet/instance pool counts | ✓ | ✓ |
+| SQL Database | vCore quota | ✓ | ✓ |
+| SQL Managed Instance | Total region vCore quota, per-hardware-generation vCore quota, and subnet quota | ✓ | ✓ |
 | Cosmos DB | Database account counts (subscription + per-region) | ✓ | ✓ |
 | PostgreSQL Flexible Server | Per-SKU-family vCore quota | ✓ | ✓ |
 | MySQL Flexible Server | Provisioning block detection | ✓ | ✓ |
@@ -92,18 +92,17 @@ Lists available SQL DB editions and SQL MI hardware families, their status, and 
 
 ### PostgreSQL Regional Capabilities *(with `-IncludeCapabilities`)*
 
-Lists geo-backup support, zone-redundant HA availability, online resize, and storage auto-growth flags per region.
+Lists geo-backup support, zone-redundant HA availability, online resize, storage auto-growth flags, and any provisioning restriction per region.
 
 ### MySQL Regional Capabilities *(with `-IncludeCapabilities`)*
 
-Lists zone-redundant HA support, geo-backup support, all supported HA modes, and any provisioning restriction per region. Restricted entries are repeated in a red-highlighted table.
+Lists zone-redundant HA support, geo-backup support, and all supported HA modes per availability zone in the region. Each row corresponds to one availability zone (e.g. `none`, `1`, `2`, `3`). If MySQL Flex is not available in a region, no rows are emitted and the region/AZ access row will reflect the restriction.
 
 | Column | Meaning |
 |---|---|
 | `ZoneRedundantHA` | Whether `ZoneRedundant` appears in the supported HA modes for this capability tier |
 | `GeoBackupSupported` | Whether any geo-backup target regions are advertised |
 | `SupportedHAModes` | Comma-separated list of supported HA modes (e.g. `SameZone, ZoneRedundant`) |
-| `Restricted` | `Enabled` = subscription is blocked from provisioning in this region; open a support request |
 
 ### CSV Export
 
