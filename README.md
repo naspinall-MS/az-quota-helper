@@ -1,12 +1,12 @@
 # Get-AzDBServiceQuota
 
-A PowerShell script that reports quota limits, current usage, and regional access (including availability zone support) for Azure database services across one or more subscriptions and regions.
+A PowerShell script that reports quota limits, current usage, and regional access for Azure database services across one or more subscriptions and regions.
 
 ## Services covered
 
 | Service | Quota / Usage | Region access | AZ access |
 |---|---|---|---|
-| SQL Database | vCore quota | ✓ | ✓ |
+| SQL Database | vCore quota | ✓ | N/A |
 | SQL Managed Instance | Total region vCore quota, per-hardware-generation vCore quota, and subnet quota | ✓ | ✓ |
 | Cosmos DB | Database account counts (subscription + per-region) | ✓ | ✓ |
 | PostgreSQL Flexible Server | Per-SKU-family vCore quota | ✓ | ✓ |
@@ -74,7 +74,7 @@ One row per service per location indicating whether the subscription can deploy 
 | Column | Values | Meaning |
 |---|---|---|
 | `AccessAllowedForRegion` | `True` / `False` | Whether the subscription can create resources in this region. `False` typically requires a support request to allowlist. |
-| `AccessAllowedForAZ` | `True` / `False` / `AZNotSupported` | `True` = zone-redundant deployments are available. `False` = region has AZ infrastructure but the subscription is blocked (open a support request). `AZNotSupported` = the region has no availability zone infrastructure. |
+| `AccessAllowedForAZ` | `True` / `Partial` / `False` / `AZNotSupported` / `N/A` | `True` = all hardware families support zone redundancy. `Partial` = some but not all families support zone redundancy (SQL MI). `False` = region has AZ infrastructure but no SKU supports zone redundancy (SQL MI) or the subscription is blocked (other services). `AZNotSupported` = the region has no AZ infrastructure. `N/A` = AZ data not yet available (SQL DB only). For SQL MI, the `Notes` column lists which hardware families support zone redundancy. |
 | `Notes` | See below | Human-readable summary of any access restriction. |
 
 #### Notes values
@@ -83,8 +83,11 @@ One row per service per location indicating whether the subscription can deploy 
 |---|---|
 | *(empty)* | No restrictions detected |
 | `Region access blocked - open support request` | Subscription is not allowlisted for this region |
-| `AZ access blocked - open support request` | Region supports AZs but subscription is blocked from zone-redundant deployments |
-| `Region and AZ access blocked - open support request` | Both of the above apply |
+| `AZ access data not yet available for SQL DB` | SQL DB only — zone redundancy access information is not currently available from the API |
+| `ZR families: <list>` | SQL MI only — lists the hardware families (edition/family name) that support zone redundancy in this region |
+| `No families support zone redundancy in this region` | SQL MI only — region has AZ infrastructure but no hardware family advertises zone redundancy |
+| `AZ access blocked - open support request` | Region supports AZs but the subscription is blocked from zone-redundant deployments (Cosmos DB, PostgreSQL, MySQL) |
+| `Region and AZ access blocked - open support request` | Both region and AZ access are blocked (Cosmos DB, PostgreSQL, MySQL) |
 
 ### SQL Regional Capabilities *(with `-IncludeCapabilities`)*
 

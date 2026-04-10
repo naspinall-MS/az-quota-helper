@@ -404,9 +404,11 @@ function Get-SqlCapabilities {
 }
 
 function Get-SqlRegionAccess {
-    # Derives region availability and zone-redundancy support from the capabilities API.
-    # RegionAvailable = false means the subscription cannot deploy in this region -> open SR.
-    # ZoneRedundancySupported = whether any edition/family supports zone-redundant deployments.
+    # Derives region availability from the capabilities API.
+    # Root-level status == 'Available' means the subscription is whitelisted for this region.
+    # SQL DB AZ: not yet available (confirmed with SQL PG team). Always N/A.
+    # SQL MI AZ: derived from supportedManagedInstanceVersions[].supportedEditions[].supportedFamilies[].zoneRedundant.
+    #            True if any hardware family in this region supports zone redundancy.
     param([string] $Token, [string] $SubscriptionId, [string] $SubscriptionName, [string] $Location, [bool] $IncludeSqlDb, [bool] $IncludeSqlMi,
           [object] $CachedResponse = $null,   # Pass pre-fetched capabilities to avoid duplicate REST call
           [bool]   $RegionHasAZ    = $true)   # Whether the region has AZ infrastructure (from ARM locations API)
@@ -421,68 +423,59 @@ function Get-SqlRegionAccess {
         return
     }
 
-    $rows        = [System.Collections.Generic.List[PSCustomObject]]::new()
-    $svrVersions = if ($resp.PSObject.Properties['supportedServerVersions'])          { @($resp.supportedServerVersions)          } else { @() }
-    $miVersions  = if ($resp.PSObject.Properties['supportedManagedInstanceVersions']) { @($resp.supportedManagedInstanceVersions) } else { @() }
+    $rows = [System.Collections.Generic.List[PSCustomObject]]::new()
+
+    # Root-level status is the subscription-level region access signal.
+    # Only 'Available' indicates the subscription is whitelisted for this region.
+    # 'Visible' means visible in the portal only — provisioning may still be blocked.
+    $rootStatus      = if ($resp.PSObject.Properties['status'] -and $resp.status) { $resp.status } else { '' }
+    $regionAvailable = $rootStatus -eq 'Available'
 
     $normLoc = $Location.ToLower() -replace '[\s-]', ''
 
     if ($IncludeSqlDb) {
-        $regionAvailable = $svrVersions.Count -gt 0
-        $zrSupported     = $false
-        if ($regionAvailable) {
-            :dbSearch foreach ($ver in $svrVersions) {
-                foreach ($ed in $ver.supportedEditions) {
-                    $slos = if ($ed.PSObject.Properties['supportedServiceLevelObjectives']) { @($ed.supportedServiceLevelObjectives) } else { @() }
-                    foreach ($slo in $slos) {
-                        if ($slo.PSObject.Properties['zoneRedundant'] -and $slo.zoneRedundant) {
-                            $zrSupported = $true; break dbSearch
-                        }
-                    }
-                }
-            }
-        }
         $dbNotes = [System.Collections.Generic.List[string]]::new()
-        if (-not $regionAvailable -and $RegionHasAZ -and -not $zrSupported) { $dbNotes.Add('Region and AZ access blocked - open support request') }
-        elseif (-not $regionAvailable)                                       { $dbNotes.Add('Region access blocked - open support request') }
-        elseif ($RegionHasAZ -and -not $zrSupported)                         { $dbNotes.Add('AZ access blocked - open support request') }
+        if (-not $regionAvailable) { $dbNotes.Add('Region access blocked - open support request') }
+        $dbNotes.Add('AZ access data not yet available for SQL DB')
         $rows.Add([PSCustomObject][ordered]@{
             SubscriptionId         = $SubscriptionId
             SubscriptionName       = $SubscriptionName
             Service                = 'SQL DB'
             LocationCode           = $normLoc
             AccessAllowedForRegion = $regionAvailable
-            AccessAllowedForAZ     = if (-not $RegionHasAZ) { 'AZNotSupported' } elseif ($zrSupported) { $true } else { $false }
+            AccessAllowedForAZ     = if ($regionAvailable) { 'N/A' } else { $false }
             Notes                  = ($dbNotes -join '; ')
         })
     }
 
     if ($IncludeSqlMi) {
-        $regionAvailable = $miVersions.Count -gt 0
-        $zrSupported     = $false
-        if ($regionAvailable) {
-            :miSearch foreach ($ver in $miVersions) {
-                foreach ($ed in $ver.supportedEditions) {
-                    $families = if ($ed.PSObject.Properties['supportedFamilies']) { @($ed.supportedFamilies) } else { @() }
-                    foreach ($fam in $families) {
-                        if ($fam.PSObject.Properties['zoneRedundant'] -and $fam.zoneRedundant) {
-                            $zrSupported = $true; break miSearch
-                        }
+        $miVersions  = if ($resp.PSObject.Properties['supportedManagedInstanceVersions']) { @($resp.supportedManagedInstanceVersions) } else { @() }
+        $zrFamilies  = [System.Collections.Generic.List[string]]::new()
+        $nonZrFamilies = [System.Collections.Generic.List[string]]::new()
+        foreach ($ver in $miVersions) {
+            foreach ($ed in $ver.supportedEditions) {
+                foreach ($fam in @(if ($ed.PSObject.Properties['supportedFamilies']) { $ed.supportedFamilies } else { @() })) {
+                    if ($fam.PSObject.Properties['zoneRedundant'] -and $fam.zoneRedundant) {
+                        $zrFamilies.Add("$($ed.name)/$($fam.name)")
+                    } else {
+                        $nonZrFamilies.Add("$($ed.name)/$($fam.name)")
                     }
                 }
             }
         }
+        $anyZr  = $zrFamilies.Count -gt 0
+        $allZr  = $anyZr -and $nonZrFamilies.Count -eq 0
         $miNotes = [System.Collections.Generic.List[string]]::new()
-        if (-not $regionAvailable -and $RegionHasAZ -and -not $zrSupported) { $miNotes.Add('Region and AZ access blocked - open support request') }
-        elseif (-not $regionAvailable)                                       { $miNotes.Add('Region access blocked - open support request') }
-        elseif ($RegionHasAZ -and -not $zrSupported)                         { $miNotes.Add('AZ access blocked - open support request') }
+        if (-not $regionAvailable)                              { $miNotes.Add('Region access blocked - open support request') }
+        if ($regionAvailable -and $RegionHasAZ -and $anyZr)     { $miNotes.Add("ZR families: $($zrFamilies -join ', ')") }
+        if ($regionAvailable -and $RegionHasAZ -and -not $anyZr) { $miNotes.Add('No families support zone redundancy in this region') }
         $rows.Add([PSCustomObject][ordered]@{
             SubscriptionId         = $SubscriptionId
             SubscriptionName       = $SubscriptionName
             Service                = 'SQL MI'
             LocationCode           = $normLoc
             AccessAllowedForRegion = $regionAvailable
-            AccessAllowedForAZ     = if (-not $RegionHasAZ) { 'AZNotSupported' } elseif ($zrSupported) { $true } else { $false }
+            AccessAllowedForAZ     = if (-not $regionAvailable) { $false } elseif (-not $RegionHasAZ) { 'AZNotSupported' } elseif ($allZr) { $true } elseif ($anyZr) { 'Partial' } else { $false }
             Notes                  = ($miNotes -join '; ')
         })
     }
@@ -1109,7 +1102,7 @@ if ($regionAccess.Count -gt 0) {
     Write-Host ''
     Write-Host ('── Region & Zone Access ' + ('─' * 47)) -ForegroundColor Cyan
     Write-Host '  AccessAllowedForRegion : subscription can deploy standard resources in this region (false = open SR to allowlist)' -ForegroundColor DarkGray
-    Write-Host '  AccessAllowedForAZ     : subscription can deploy zone-redundant resources / AZ support exists in region (false = open SR to allowlist)' -ForegroundColor DarkGray
+    Write-Host '  AccessAllowedForAZ     : subscription can deploy zone-redundant resources (false = blocked or no ZR-capable SKU in region; N/A = not yet available for SQL DB)' -ForegroundColor DarkGray
     Write-Host ''
     $regionAccess | Format-Table -AutoSize -Property $accessProps
 }
