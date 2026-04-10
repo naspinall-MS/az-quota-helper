@@ -35,16 +35,16 @@
     without prompting, using timestamped filenames.
 
 .EXAMPLE
-    .\Get-AzDatabaseQuota.ps1 -SubscriptionId 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx' -Location 'eastus'
+    .\Get-AzDBServiceQuota.ps1 -SubscriptionId 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx' -Location 'eastus'
 
 .EXAMPLE
-    .\Get-AzDatabaseQuota.ps1 -SubscriptionId 'id1','id2' -Location 'eastus','westeurope' -Service SqlDB, SqlMI
+    .\Get-AzDBServiceQuota.ps1 -SubscriptionId 'id1','id2' -Location 'eastus','westeurope' -Service SqlDB, SqlMI
 
 .EXAMPLE
-    .\Get-AzDatabaseQuota.ps1 -SubscriptionId '<id>' -Location 'westeurope' -Service SqlDB, SqlMI -IncludeCapabilities
+    .\Get-AzDBServiceQuota.ps1 -SubscriptionId '<id>' -Location 'westeurope' -Service SqlDB, SqlMI -IncludeCapabilities
 
 .EXAMPLE
-    .\Get-AzDatabaseQuota.ps1 -SubscriptionId '<id>' -Location 'eastus' -Service CosmosDB, PostgreSQL -OutputPath C:\Temp\quota.csv
+    .\Get-AzDBServiceQuota.ps1 -SubscriptionId '<id>' -Location 'eastus' -Service CosmosDB, PostgreSQL -OutputDir C:\Temp
 #>
 
 [CmdletBinding()]

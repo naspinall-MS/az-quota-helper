@@ -50,13 +50,13 @@ All parameters are optional. If omitted, the script prompts interactively.
 .\Get-AzDBServiceQuota.ps1 -SubscriptionId '<id>' -Location 'eastus'
 
 # Multiple subscriptions and regions, specific services only
-.\.Get-AzDBServiceQuota.ps1 -SubscriptionId '<id1>','<id2>' -Location 'eastus','westeurope' -Services SqlDB,SqlMI
+.\Get-AzDBServiceQuota.ps1 -SubscriptionId '<id1>','<id2>' -Location 'eastus','westeurope' -Services SqlDB,SqlMI
 
 # Include SQL/PostgreSQL/MySQL capability detail
-.\.Get-AzDBServiceQuota.ps1 -SubscriptionId '<id>' -Location 'eastus' -Services SqlDB,SqlMI -IncludeCapabilities
+.\Get-AzDBServiceQuota.ps1 -SubscriptionId '<id>' -Location 'eastus' -Services SqlDB,SqlMI -IncludeCapabilities
 
 # Export all results to a directory (no prompt)
-.\.Get-AzDBServiceQuota.ps1 -SubscriptionId '<id>' -Location 'eastus' -Services CosmosDB,PostgreSQL -OutputDir C:\Temp
+.\Get-AzDBServiceQuota.ps1 -SubscriptionId '<id>' -Location 'eastus' -Services CosmosDB,PostgreSQL -OutputDir C:\Temp
 ```
 
 ## Output
