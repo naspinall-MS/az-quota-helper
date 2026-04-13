@@ -69,6 +69,48 @@ param(
 Set-StrictMode -Version 1
 $ErrorActionPreference = 'Stop'
 
+#region ── Service Name Normalization ──────────────────────────────────────────
+
+function Normalize-ServiceName {
+    param([string]$Name)
+    
+    # Remove spaces, hyphens, underscores and convert to lowercase
+    $normalized = $Name -replace '[\s\-_]', '' | ForEach-Object ToLower
+    
+    # Mapping of common variations to canonical names
+    $serviceMap = @{
+        'cosmosdb'   = 'CosmosDB'
+        'cosmos'     = 'CosmosDB'
+        'sqldb'      = 'SqlDB'
+        'sqldatabase' = 'SqlDB'
+        'sqlmi'      = 'SqlMI'
+        'sqlmanagedinstance' = 'SqlMI'
+        'managedinstance' = 'SqlMI'
+        'postgresql' = 'PostgreSQL'
+        'postgres'   = 'PostgreSQL'
+        'pg'         = 'PostgreSQL'
+        'mysql'      = 'MySQL'
+        'all'        = 'All'
+    }
+    
+    if ($serviceMap.ContainsKey($normalized)) {
+        return $serviceMap[$normalized]
+    }
+    
+    # If no match, return original (will be caught by validation)
+    return $Name
+}
+
+# Normalize Services parameter if provided
+if ($Services) {
+    $Services = @($Services | ForEach-Object { 
+        $trimmed = $_.Trim()
+        if ($trimmed) { Normalize-ServiceName $trimmed }
+    } | Where-Object { $_ })
+}
+
+#endregion
+
 #region ── Helpers ──────────────────────────────────────────────────────────────
 
 function ConvertFrom-SecureStringToPlainText {
@@ -468,7 +510,7 @@ function Get-SqlRegionAccess {
         $miNotes = [System.Collections.Generic.List[string]]::new()
         if (-not $regionAvailable)                              { $miNotes.Add('Region access blocked - open support request') }
         if ($regionAvailable -and $RegionHasAZ -and $anyZr)     { $miNotes.Add("ZR families: $($zrFamilies -join ', ')") }
-        if ($regionAvailable -and $RegionHasAZ -and -not $anyZr) { $miNotes.Add('No families support zone redundancy in this region') }
+        if ($regionAvailable -and $RegionHasAZ -and -not $anyZr) { $miNotes.Add('ZR disabled for all families - open support request') }
         $rows.Add([PSCustomObject][ordered]@{
             SubscriptionId         = $SubscriptionId
             SubscriptionName       = $SubscriptionName
@@ -813,11 +855,20 @@ if (-not $Services) {
     if ([string]::IsNullOrWhiteSpace($serviceInput)) {
         $Services = @('All')
     } else {
-        $Services = @($serviceInput -split '\s*,\s*' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        $Services = @($serviceInput -split '\s*,\s*' | ForEach-Object { 
+            $trimmed = $_.Trim()
+            if ($trimmed) { Normalize-ServiceName $trimmed }
+        } | Where-Object { $_ })
         $invalid  = $Services | Where-Object { $_ -notin ($validServices + 'All') }
         if ($invalid) {
             throw "Invalid service(s): $($invalid -join ', '). Valid options: All, $($validServices -join ', ')"
         }
+    }
+} else {
+    # Validate normalized parameter input
+    $invalid = $Services | Where-Object { $_ -notin ($validServices + 'All') }
+    if ($invalid) {
+        throw "Invalid service(s): $($invalid -join ', '). Valid options: All, $($validServices -join ', ')"
     }
 }
 
