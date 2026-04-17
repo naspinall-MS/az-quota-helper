@@ -131,8 +131,13 @@ function Get-BearerToken {
 }
 
 function Assert-AzAuthentication {
-    # Checks for an active Az session and initiates Connect-AzAccount if none is found.
+    # Checks for an active Az session with a valid, usable token.
+    # Initiates Connect-AzAccount only if no session exists, token is expired,
+    # or authentication cannot access resources (MFA/conditional access required).
+    
     $ctx = Get-AzContext -ErrorAction SilentlyContinue
+    
+    # Check 1: Do we have an active context?
     if (-not $ctx -or -not $ctx.Account) {
         Write-Host '  No active Azure session detected. Initiating sign-in...' -ForegroundColor Yellow
         Connect-AzAccount | Out-Null
@@ -141,8 +146,62 @@ function Assert-AzAuthentication {
             throw 'Authentication failed. Sign in with Connect-AzAccount and retry.'
         }
         Write-Host "  Signed in as: $($ctx.Account.Id)" -ForegroundColor Green
-    } else {
-        Write-Host "  Active session: $($ctx.Account.Id)" -ForegroundColor DarkGray
+        return
+    }
+    
+    # Check 2: Is the token still valid (not expired)?
+    try {
+        $token = Get-AzAccessToken -ResourceUrl 'https://management.azure.com/' -ErrorAction Stop
+        $expiresOn = $token.ExpiresOn
+        
+        # Windows PowerShell: ExpiresOn is DateTime
+        # PowerShell Core: ExpiresOn is DateTimeOffset
+        $expiryTime = if ($expiresOn -is [DateTimeOffset]) {
+            $expiresOn.DateTime
+        } else {
+            $expiresOn
+        }
+        
+        $timeRemaining = $expiryTime - [DateTime]::UtcNow
+        
+        if ($timeRemaining.TotalMinutes -lt 5) {
+            Write-Host "  Token expires in $([math]::Round($timeRemaining.TotalMinutes, 1)) minutes. Re-authenticating..." -ForegroundColor Yellow
+            Connect-AzAccount | Out-Null
+            Write-Host "  Signed in as: $($ctx.Account.Id)" -ForegroundColor Green
+            return
+        }
+    }
+    catch {
+        # Token retrieval failed - force re-authentication
+        Write-Host "  Token validation failed. Re-authenticating..." -ForegroundColor Yellow
+        Connect-AzAccount | Out-Null
+        Write-Host "  Signed in as: $($ctx.Account.Id)" -ForegroundColor Green
+        return
+    }
+    
+    # Check 3: Can we actually access resources? (MFA/conditional access check)
+    # Suppress warnings temporarily to avoid clutter; we'll handle errors explicitly
+    $originalWarningPreference = $WarningPreference
+    try {
+        $WarningPreference = 'SilentlyContinue'
+        $testSub = Get-AzSubscription -WarningAction SilentlyContinue -ErrorAction Stop | Select-Object -First 1
+        
+        if (-not $testSub) {
+            Write-Host "  No accessible subscriptions found. You may need to re-authenticate." -ForegroundColor Yellow
+            Connect-AzAccount | Out-Null
+            Write-Host "  Signed in as: $($ctx.Account.Id)" -ForegroundColor Green
+        } else {
+            Write-Host "  Active session: $($ctx.Account.Id) (token valid for $([math]::Round($timeRemaining.TotalMinutes, 0)) min)" -ForegroundColor DarkGray
+        }
+    }
+    catch {
+        # Subscription access failed - likely MFA/conditional access or tenant mismatch
+        Write-Host "  Authentication requires additional verification (MFA/conditional access). Re-authenticating..." -ForegroundColor Yellow
+        Connect-AzAccount | Out-Null
+        Write-Host "  Signed in as: $($ctx.Account.Id)" -ForegroundColor Green
+    }
+    finally {
+        $WarningPreference = $originalWarningPreference
     }
 }
 
@@ -156,8 +215,40 @@ function Confirm-Inputs {
 
     # ── Validate subscriptions (single call for all accessible subscriptions) ──
     Write-Host '  Validating subscription(s)...' -ForegroundColor DarkCyan
+
     $accessibleSubs = @{}
-    Get-AzSubscription -ErrorAction SilentlyContinue | ForEach-Object { $accessibleSubs[$_.Id] = $_.Name }
+    $subWarnings    = @()
+    Get-AzSubscription -WarningVariable subWarnings -WarningAction SilentlyContinue -ErrorAction SilentlyContinue |
+        ForEach-Object { $accessibleSubs[$_.Id] = $_.Name }
+
+    # If any requested subscriptions are missing AND there are tenant auth warnings,
+    # the session token doesn't cover the required tenant (MFA/conditional access).
+    # Extract the tenant ID from the warning, re-authenticate, then retry once.
+    $missingIds = @($SubscriptionIds.Value | Where-Object { -not $accessibleSubs.ContainsKey($_) })
+    if ($missingIds.Count -gt 0 -and $subWarnings.Count -gt 0) {
+        $tenantWarnings = @($subWarnings | Where-Object { $_ -match "Unable to acquire token for tenant '([0-9a-f\-]+)'" })
+        if ($tenantWarnings.Count -gt 0) {
+            $failedTenants = @($tenantWarnings | ForEach-Object {
+                if ($_ -match "Unable to acquire token for tenant '([0-9a-f\-]+)'") { $Matches[1] }
+            } | Select-Object -Unique)
+
+            $tenantMsg = $failedTenants -join ', '
+            Write-Host ''
+            Write-Host "  Cannot access subscription(s) — authentication required for tenant: $tenantMsg" -ForegroundColor Yellow
+            Write-Host '  Re-authenticating...' -ForegroundColor Yellow
+
+            if ($failedTenants.Count -eq 1) {
+                Connect-AzAccount | Out-Null
+            } else {
+                Connect-AzAccount | Out-Null
+            }
+
+            # Retry after re-authentication
+            $accessibleSubs = @{}
+            Get-AzSubscription -WarningAction SilentlyContinue -ErrorAction SilentlyContinue |
+                ForEach-Object { $accessibleSubs[$_.Id] = $_.Name }
+        }
+    }
 
     $validSubs = [System.Collections.Generic.List[string]]::new()
     foreach ($subId in $SubscriptionIds.Value) {
@@ -175,8 +266,8 @@ function Confirm-Inputs {
 
     # ── Validate locations via single REST call (much faster than Get-AzLocation) ─
     # GET subscriptions/{id}/locations returns only names — minimal payload, one round-trip.
+    # No Set-AzContext needed: ARM bearer tokens are not subscription-scoped.
     Write-Host '  Validating location(s)...' -ForegroundColor DarkCyan
-    Set-AzContext -SubscriptionId $SubscriptionIds.Value[0] | Out-Null
     $locToken  = Get-BearerToken
     $locUri    = "https://management.azure.com/subscriptions/$($SubscriptionIds.Value[0])/locations?api-version=2022-12-01"
     $locResp   = Invoke-ArmGet -Token $locToken -Uri $locUri
