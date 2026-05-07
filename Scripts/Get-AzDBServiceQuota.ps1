@@ -69,13 +69,13 @@ param(
 Set-StrictMode -Version 1
 $ErrorActionPreference = 'Stop'
 
-# 1.0.0 is stamped by Publish-Release.ps1 at release time.
+# __RELEASE_VERSION__ is stamped by Publish-Release.ps1 at release time.
 # git describe is used when running from a cloned repo (takes precedence).
 # Both paths allow the update check to work correctly.
 $script:Version = try {
     $tag = git -C $PSScriptRoot describe --tags --abbrev=0 2>$null
-    if ($LASTEXITCODE -eq 0 -and $tag) { $tag.TrimStart('v') } else { '1.0.0' }
-} catch { '1.0.0' }
+    if ($LASTEXITCODE -eq 0 -and $tag) { $tag.TrimStart('v') } else { '__RELEASE_VERSION__' }
+} catch { '__RELEASE_VERSION__' }
 
 #region ── Service Name Normalization ──────────────────────────────────────────
 
@@ -132,7 +132,7 @@ function Invoke-VersionCheck {
             -ErrorAction Stop
 
         # Skip comparison if version placeholder was never stamped (local dev, no tags)
-        if ($script:Version -eq '1.0.0') { return }
+        if ($script:Version -eq '__RELEASE_VERSION__') { return }
 
         $latest  = [Version]($rel.tag_name -replace '^v', '')
         $current = [Version]$script:Version
