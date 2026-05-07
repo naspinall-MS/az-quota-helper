@@ -1,5 +1,7 @@
 # Get-AzDBServiceQuota
 
+> **Disclaimer:** This script was created in my personal time and is provided as-is, without warranty of any kind. It is not an official Microsoft product and does not represent the views or recommendations of Microsoft. Use it at your own discretion.
+
 A PowerShell script that reports quota limits, current usage, and regional access for Azure database services across one or more subscriptions and regions.
 
 ## Services covered
@@ -118,6 +120,30 @@ At the end of each run the script prompts whether to export results to CSV. Each
 | `AzDbQuota-SQLMICaps-<timestamp>.csv` | SQL DB edition and SQL MI hardware family availability | `-IncludeCapabilities` |
 | `AzDbQuota-PostgresCaps-<timestamp>.csv` | PostgreSQL regional capability flags | `-IncludeCapabilities` |
 | `AzDbQuota-MySQLCaps-<timestamp>.csv` | MySQL regional capability flags | `-IncludeCapabilities` |
+
+## Staying up to date
+
+The script checks for new releases automatically each time it runs and prints a notice if a newer version is available — whether you cloned the repo or downloaded the script directly.
+
+To update manually:
+
+```powershell
+# If you cloned the repo
+git pull
+
+# Or download the latest release directly
+Invoke-WebRequest -Uri 'https://github.com/naspinall-MS/az-quota-helper/releases/latest/download/Get-AzDBServiceQuota.ps1' -OutFile '.\Get-AzDBServiceQuota.ps1'
+```
+
+Releases are tagged on [GitHub](https://github.com/naspinall-MS/az-quota-helper/releases) — watch the repo to get notified of new versions.
+
+## Publishing a new release
+
+Run the release helper from the repo root. This stamps the version into the script, commits, tags, and pushes in one step:
+
+```powershell
+.\Publish-Release.ps1 -Version '1.2.0'
+```
 
 ## How it works
 

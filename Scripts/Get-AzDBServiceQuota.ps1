@@ -69,6 +69,14 @@ param(
 Set-StrictMode -Version 1
 $ErrorActionPreference = 'Stop'
 
+# __RELEASE_VERSION__ is stamped by Publish-Release.ps1 at release time.
+# git describe is used when running from a cloned repo (takes precedence).
+# Both paths allow the update check to work correctly.
+$script:Version = try {
+    $tag = git -C $PSScriptRoot describe --tags --abbrev=0 2>$null
+    if ($LASTEXITCODE -eq 0 -and $tag) { $tag.TrimStart('v') } else { '__RELEASE_VERSION__' }
+} catch { '__RELEASE_VERSION__' }
+
 #region ── Service Name Normalization ──────────────────────────────────────────
 
 function Normalize-ServiceName {
@@ -112,6 +120,32 @@ if ($Services) {
 #endregion
 
 #region ── Helpers ──────────────────────────────────────────────────────────────
+
+function Invoke-VersionCheck {
+    # Non-blocking check against the GitHub releases API.
+    # Displays a one-line notice if a newer version is available; silently skips on any error.
+    try {
+        $rel = Invoke-RestMethod `
+            -Uri 'https://api.github.com/repos/naspinall-MS/az-quota-helper/releases/latest' `
+            -Headers @{ 'User-Agent' = 'az-quota-helper' } `
+            -TimeoutSec 5 `
+            -ErrorAction Stop
+
+        # Skip comparison if version placeholder was never stamped (local dev, no tags)
+        if ($script:Version -eq '__RELEASE_VERSION__') { return }
+
+        $latest  = [Version]($rel.tag_name -replace '^v', '')
+        $current = [Version]$script:Version
+
+        if ($latest -gt $current) {
+            Write-Host ''
+            Write-Host "  A newer version ($($rel.tag_name)) is available: $($rel.html_url)" -ForegroundColor Yellow
+            Write-Host "  Run 'git pull' in the script directory or download from the link above." -ForegroundColor DarkGray
+        }
+    } catch {
+        # Network unavailable or repo has no releases yet — silently skip
+    }
+}
 
 function ConvertFrom-SecureStringToPlainText {
     param([Parameter(Mandatory)][Security.SecureString] $SecureString)
@@ -962,6 +996,8 @@ if (-not $Services) {
         throw "Invalid service(s): $($invalid -join ', '). Valid options: All, $($validServices -join ', ')"
     }
 }
+
+Invoke-VersionCheck
 
 Write-Host ''
 Write-Host 'Azure Database Quota & Usage Report' -ForegroundColor Cyan
