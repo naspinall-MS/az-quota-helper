@@ -70,7 +70,7 @@ Set-StrictMode -Version 1
 $ErrorActionPreference = 'Stop'
 
 # Stamped version — updated by Publish-Release.ps1 on each release.
-$script:Version = '1.0.0'
+$script:Version = '1.0.1'
 
 #region ── Service Name Normalization ──────────────────────────────────────────
 
