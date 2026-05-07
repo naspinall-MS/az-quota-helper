@@ -87,7 +87,7 @@ One row per service per location indicating whether the subscription can deploy 
 | `Region access blocked - open support request` | Subscription is not allowlisted for this region |
 | `AZ access data not yet available for SQL DB` | SQL DB only — zone redundancy access information is not currently available from the API |
 | `ZR families: <list>` | SQL MI only — lists the hardware families (edition/family name) that support zone redundancy in this region |
-| `No families support zone redundancy in this region` | SQL MI only — region has AZ infrastructure but no hardware family advertises zone redundancy |
+| `ZR disabled for all families - open support request` | SQL MI only — region has AZ infrastructure but no hardware family advertises zone redundancy; open a support request to enable it |
 | `AZ access blocked - open support request` | Region supports AZs but the subscription is blocked from zone-redundant deployments (Cosmos DB, PostgreSQL, MySQL) |
 | `Region and AZ access blocked - open support request` | Both region and AZ access are blocked (Cosmos DB, PostgreSQL, MySQL) |
 
@@ -131,11 +131,11 @@ To update manually:
 # If you cloned the repo
 git pull
 
-# Or download the latest release directly
-Invoke-WebRequest -Uri 'https://github.com/naspinall-MS/az-quota-helper/releases/latest/download/Get-AzDBServiceQuota.ps1' -OutFile '.\Get-AzDBServiceQuota.ps1'
+# Or download directly from a specific tag (replace v1.0.0 with the latest tag)
+Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/naspinall-MS/az-quota-helper/<tag>/Scripts/Get-AzDBServiceQuota.ps1' -OutFile '.\Get-AzDBServiceQuota.ps1'
 ```
 
-Releases are tagged on [GitHub](https://github.com/naspinall-MS/az-quota-helper/releases) — watch the repo to get notified of new versions.
+Releases are tagged on [GitHub](https://github.com/naspinall-MS/az-quota-helper/tags) — watch the repo to get notified of new versions.
 
 ## Publishing a new release
 
