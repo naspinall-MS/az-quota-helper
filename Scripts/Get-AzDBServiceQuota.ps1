@@ -70,7 +70,7 @@ Set-StrictMode -Version 1
 $ErrorActionPreference = 'Stop'
 
 # Stamped version — updated by Publish-Release.ps1 on each release.
-$script:Version = '1.0.1'
+$script:Version = '1.0.2'
 
 #region ── Service Name Normalization ──────────────────────────────────────────
 
@@ -401,9 +401,10 @@ function New-UsageRow {
         [string] $Unit = 'Count'
     )
     $numLimit  = if ($null -ne $Limit) { $Limit -as [long] } else { $null }
-    $hasLimit  = ($null -ne $numLimit) -and ($numLimit -gt 0)
-    $available = if ($hasLimit) { $numLimit - [long]$CurrentValue } else { $null }
-    $pctUsed   = if ($hasLimit) { '{0:N1}%' -f ([long]$CurrentValue / $numLimit * 100) } else { 'N/A' }
+    $hasLimit  = $null -ne $numLimit          # limit is known (may be 0 — e.g. no MI quota granted)
+    $canCalc   = $hasLimit -and ($numLimit -gt 0)  # safe to subtract / divide
+    $available = if ($canCalc) { $numLimit - [long]$CurrentValue } else { $null }
+    $pctUsed   = if ($canCalc) { '{0:N1}%' -f ([long]$CurrentValue / $numLimit * 100) } else { 'N/A' }
 
     [PSCustomObject][ordered]@{
         SubscriptionId   = $SubscriptionId
